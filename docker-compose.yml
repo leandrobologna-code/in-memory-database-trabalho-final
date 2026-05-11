@@ -1,0 +1,60 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: trabalho-final-memorydb
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mongo-init:
+    image: mongo:7
+    container_name: trabalho-final-memorydb-init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: on-failure
+    command: ["mongosh", "--host", "mongo:27017", "--quiet", "--eval", "try { rs.status() } catch(e) { rs.initiate({_id:'rs0', members:[{_id:0, host:'mongo:27017'}]}) }"]
+
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: trabalho-final-memorydb-redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  seed:
+    image: python:3.11-slim
+    container_name: trabalho-final-memorydb-seed
+    working_dir: /workspace
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/?directConnection=true
+      - DB_NAME=radar_combustivel
+    volumes:
+      - ./:/workspace
+    command: >
+      bash -lc "
+        pip install -r requirements.txt &&
+        python data-generator/seed_radar_combustivel.py
+      "
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+
+volumes:
+  mongo_data:
+  redis_data:
