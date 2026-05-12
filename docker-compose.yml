@@ -54,6 +54,72 @@ services:
       mongo:
         condition: service_healthy
 
+  seed-redis:
+    image: python:3.11-slim
+    container_name: trabalho-final-memorydb-seed-redis
+    working_dir: /workspace
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/?directConnection=true
+      - DB_NAME=radar_combustivel
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./:/workspace
+    command: >
+      bash -lc "
+        pip install -r requirements.txt &&
+        python data-pipeline/seed_radar_combustivel_redis.py
+      "
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  consumer:
+    image: python:3.11-slim
+    container_name: trabalho-final-memorydb-consumer
+    working_dir: /workspace
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/?directConnection=true
+      - DB_NAME=radar_combustivel
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./:/workspace
+    command: >
+      bash -lc "
+        pip install -r requirements.txt &&
+        python data-pipeline/consumer_radar_combustivel_mongodb.py
+      "
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    image: python:3.11-slim
+    container_name: trabalho-final-memorydb-dashboard
+    working_dir: /workspace
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./:/workspace
+    ports:
+      - "8501:8501"
+    command: >
+      bash -lc "
+           pip install -r requirements.txt &&
+           streamlit run streamlit-app/dashboard.py 
+           --server.port=8501 
+           --server.address=0.0.0.0 
+           --server.headless=true
+          "
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   mongo_data:
