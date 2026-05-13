@@ -75,7 +75,7 @@ def ranking_preco(redis: Redis, combustivel: str, top: int = 20) -> pd.DataFrame
         posto = redis.hgetall(f"posto:{posto_id}")
         records.append({
             "posto_id":     posto_id,
-            "nome":         posto.get("nome_fantasia", posto_id[:12] + "..."),
+            "nome":         posto.get("nome_fantasia") or "—",
             "bandeira":     posto.get("bandeira", "—"),
             "cidade":       posto.get("cidade", "—"),
             "estado":       posto.get("estado", "—"),
@@ -113,7 +113,7 @@ def ranking_postos_avaliacao(redis: Redis, top: int = 15) -> pd.DataFrame:
     for posto_id, avg in rows:
         posto = redis.hgetall(f"posto:{posto_id}")
         records.append({
-            "nome":        posto.get("nome_fantasia", posto_id[:12] + "..."),
+            "nome":        posto.get("nome_fantasia", "—"),
             "bandeira":    posto.get("bandeira", "—"),
             "cidade":      posto.get("cidade", "—"),
             "avaliacao":   round(float(avg), 2),
@@ -137,7 +137,7 @@ def ranking_variacao(redis: Redis, top: int = 15) -> pd.DataFrame:
         combustivel = parts[1]
         posto = redis.hgetall(f"posto:{posto_id}")
         records.append({
-            "nome":         posto.get("nome_fantasia", posto_id[:12] + "..."),
+            "nome":         posto.get("nome_fantasia", "—"),
             "combustivel":  COMBUSTIVEL_LABEL.get(combustivel, combustivel),
             "variacao_abs": round(float(variacao), 2),
         })
@@ -381,9 +381,39 @@ elif pagina == "💰 Ranking de Preços":
         st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("### Tabela detalhada")
-        df_show = df[["nome", "bandeira", "cidade", "estado", "preco_atual", "variacao_pct"]].copy()
-        df_show.columns = ["Posto", "Bandeira", "Cidade", "UF", "Preço (R$)", "Variação (%)"]
-        st.dataframe(df_show.style.format({"Preço (R$)": "{:.3f}", "Variação (%)": "{:+.2f}"}), use_container_width=True)
+        st.caption("Clique em uma linha e copie o **posto_id** para consultar a evolução de preços.")
+
+        # ----------------------------------------------------------------
+        # CORREÇÃO: inclui posto_id na tabela e usa nome legível como label
+        # Se o posto não foi encontrado no hash (nome == "—"), exibe o ID
+        # truncado na coluna Posto para facilitar a leitura.
+        # ----------------------------------------------------------------
+        df_show = df[["posto_id", "nome", "bandeira", "cidade", "estado", "preco_atual", "variacao_pct"]].copy()
+        df_show["nome"] = df_show.apply(
+            lambda r: r["nome"] if r["nome"] != "—" else r["posto_id"],
+            axis=1,
+        )
+        df_show.columns = ["posto_id", "Posto", "Bandeira", "Cidade", "UF", "Preço (R$)", "Variação (%)"]
+        st.dataframe(
+            df_show.style.format({"Preço (R$)": "{:.3f}", "Variação (%)": "{:+.2f}"}),
+            use_container_width=True,
+        )
+
+        # Atalho rápido: seleciona posto para ir direto à Time Series
+        st.markdown("---")
+        st.markdown("### ⚡ Atalho — ver evolução de preço")
+        posto_opcoes = {
+            f"{row['Posto']} ({row['posto_id'][:8]}…)": row["posto_id"]
+            for _, row in df_show.iterrows()
+        }
+        posto_escolhido_label = st.selectbox("Selecione um posto", list(posto_opcoes.keys()))
+        posto_escolhido_id    = posto_opcoes[posto_escolhido_label]
+
+        if st.button("📈 Ver evolução de preço deste posto"):
+            st.session_state["ts_posto_id"]  = posto_escolhido_id
+            st.session_state["ts_combustivel"] = comb_sel
+            st.switch_page = "📈 Evolução de Preços"  # hint visual — navegação manual necessária
+            st.info(f"**posto_id copiado:** `{posto_escolhido_id}`  \nVá para **📈 Evolução de Preços** e cole o ID acima.")
 
     st.markdown("---")
     st.markdown("### Maior variação recente")
@@ -549,55 +579,86 @@ elif pagina == "📈 Evolução de Preços":
     st.markdown('<p class="section-label">Time Series — ts:preco:{posto_id}:{combustivel}</p>', unsafe_allow_html=True)
     st.markdown("---")
 
-    st.info("Selecione um posto pelo ID para visualizar a evolução de preço. O ID pode ser obtido na página de Ranking de Preços.")
+    # ----------------------------------------------------------------
+    # CORREÇÃO: pré-preenche o input se o usuário veio do Ranking
+    # ----------------------------------------------------------------
+    default_posto_id  = st.session_state.get("ts_posto_id", "")
+    default_combustivel = st.session_state.get("ts_combustivel", COMBUSTIVEIS[0])
+
+    st.info("Selecione um combustível e informe o **posto_id** (disponível na tabela da página 💰 Ranking de Preços).")
 
     col1, col2 = st.columns(2)
     with col1:
-        posto_id_input = st.text_input("ID do Posto (posto_id)", placeholder="Cole aqui o posto_id")
+        posto_id_input = st.text_input(
+            "ID do Posto (posto_id)",
+            value=default_posto_id,
+            placeholder="Ex: 683abc123def456789012345",
+        )
     with col2:
+        comb_index = COMBUSTIVEIS.index(default_combustivel) if default_combustivel in COMBUSTIVEIS else 0
         comb_ts = st.selectbox(
             "Combustível",
             COMBUSTIVEIS,
+            index=comb_index,
             format_func=lambda x: COMBUSTIVEL_LABEL.get(x, x),
-            key="ts_comb"
+            key="ts_comb",
         )
 
+    # Limpa o estado de sessão após usar
+    if posto_id_input and "ts_posto_id" in st.session_state:
+        del st.session_state["ts_posto_id"]
+    if "ts_combustivel" in st.session_state:
+        del st.session_state["ts_combustivel"]
+
     if posto_id_input:
-        df_ts = time_series_preco(redis, posto_id_input, comb_ts)
+        # Valida se o posto existe no Redis antes de tentar a Time Series
         posto_info = redis.hgetall(f"posto:{posto_id_input}")
 
-        if df_ts.empty:
-            st.warning("Nenhuma série temporal encontrada para esse posto/combustível. O consumer precisa estar rodando para acumular dados em tempo real.")
+        if not posto_info:
+            st.error(
+                f"Posto `{posto_id_input}` **não encontrado** no Redis.  \n"
+                "Verifique se o `posto_id` foi copiado corretamente da tabela de Ranking de Preços "
+                "(deve ser o valor da coluna **posto_id**, não o nome do posto)."
+            )
         else:
-            nome_posto = posto_info.get("nome_fantasia", posto_id_input)
-            st.markdown(f"### {nome_posto} — {COMBUSTIVEL_LABEL[comb_ts]}")
+            nome_posto = posto_info.get("nome_fantasia") or posto_id_input
+            st.markdown(f"**Posto:** {nome_posto} &nbsp;·&nbsp; **Cidade:** {posto_info.get('cidade','—')} / {posto_info.get('estado','—')}")
 
-            fig = px.line(
-                df_ts,
-                x="timestamp",
-                y="preco",
-                markers=True,
-                labels={"timestamp": "Data/Hora", "preco": "Preço (R$)"},
-                title=f"Evolução do preço — {COMBUSTIVEL_LABEL[comb_ts]}",
-            )
-            fig.update_traces(line_color="#f97316", marker_color="#f97316")
-            fig.update_layout(
-                plot_bgcolor="#0f172a",
-                paper_bgcolor="#0f172a",
-                font_color="#f8fafc",
-                height=400,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            df_ts = time_series_preco(redis, posto_id_input, comb_ts)
 
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Mínimo",  f"R$ {df_ts['preco'].min():.3f}")
-            col_b.metric("Máximo",  f"R$ {df_ts['preco'].max():.3f}")
-            col_c.metric("Último",  f"R$ {df_ts['preco'].iloc[-1]:.3f}")
+            if df_ts.empty:
+                st.warning(
+                    "Nenhuma série temporal encontrada para esse posto/combustível.  \n"
+                    "O consumer precisa estar rodando para acumular dados em tempo real."
+                )
+            else:
+                fig = px.line(
+                    df_ts,
+                    x="timestamp",
+                    y="preco",
+                    markers=True,
+                    labels={"timestamp": "Data/Hora", "preco": "Preço (R$)"},
+                    title=f"Evolução do preço — {COMBUSTIVEL_LABEL[comb_ts]}",
+                )
+                fig.update_traces(line_color="#f97316", marker_color="#f97316")
+                fig.update_layout(
+                    plot_bgcolor="#0f172a",
+                    paper_bgcolor="#0f172a",
+                    font_color="#f8fafc",
+                    height=400,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Mínimo",  f"R$ {df_ts['preco'].min():.3f}")
+                col_b.metric("Máximo",  f"R$ {df_ts['preco'].max():.3f}")
+                col_c.metric("Último",  f"R$ {df_ts['preco'].iloc[-1]:.3f}")
     else:
         st.markdown("#### Como encontrar o posto_id")
         st.markdown("1. Vá em **💰 Ranking de Preços**")
         st.markdown("2. Selecione o combustível desejado")
-        st.markdown("3. Copie o `posto_id` da tabela detalhada")
+        st.markdown("3. Copie o valor da coluna **posto_id** na tabela detalhada")
+        st.markdown("4. Cole aqui no campo acima")
 
 
 # ============================================================

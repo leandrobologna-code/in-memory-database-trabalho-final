@@ -78,6 +78,7 @@ def load_posto_snapshot() -> Dict[str, dict]:
             "endereco": 1, "location": 1, "ativo": 1,
         })
     }
+    print(f"  [snapshot] {len(postos)} postos carregados do MongoDB.")
 
     # --- Último preço por posto/combustível ---
     pipeline_preco = [
@@ -99,6 +100,16 @@ def load_posto_snapshot() -> Dict[str, dict]:
             "preco_atual":  row["preco_atual"],
             "variacao_pct": row["variacao_pct"],
         }
+    print(f"  [snapshot] {len(precos_por_posto)} postos com preços nos eventos.")
+
+    # Diagnóstico: postos referenciados nos eventos mas ausentes na collection postos
+    ids_nos_eventos = set(precos_por_posto.keys())
+    ids_nos_postos  = set(postos.keys())
+    orfaos = ids_nos_eventos - ids_nos_postos
+    if orfaos:
+        print(f"  [AVISO] {len(orfaos)} posto_id(s) nos eventos NÃO encontrados na collection postos.")
+        print(f"          Isso indica que o MongoDB foi re-seedado sem re-sedar o Redis.")
+        print(f"          Execute este script novamente após o seed do MongoDB.")
 
     # --- Média de avaliação por posto ---
     pipeline_aval = [
@@ -197,6 +208,21 @@ def load_preco_snapshot() -> list[dict]:
     rows = list(db.eventos_preco.aggregate(pipeline))
     mongo.close()
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Limpeza Redis
+# ---------------------------------------------------------------------------
+
+def flush_redis(redis: Redis) -> None:
+    """
+    Remove todas as chaves do Redis antes de re-sedar.
+    Evita que chaves de uma rodada anterior do MongoDB seed
+    (com ObjectIds diferentes) permaneçam no Redis.
+    """
+    print("[REDIS] Limpando dados anteriores (FLUSHDB)...")
+    redis.flushdb()
+    print("[REDIS] Redis limpo.")
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +365,14 @@ def main() -> int:
     redis = Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     redis.ping()
     print("[SEED] Conexões OK.")
+
+    # -----------------------------------------------------------------------
+    # CORREÇÃO: limpa o Redis antes de qualquer operação para garantir que
+    # não existam chaves de uma execução anterior do seed do MongoDB
+    # (que gera novos ObjectIds a cada rodada, tornando as chaves antigas
+    # inválidas — posto_id no ranking sem hash posto:{id} correspondente).
+    # -----------------------------------------------------------------------
+    flush_redis(redis)
 
     print("[SEED] Carregando snapshot de postos do MongoDB...")
     snapshot = load_posto_snapshot()
