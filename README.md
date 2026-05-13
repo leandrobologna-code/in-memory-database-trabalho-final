@@ -11,13 +11,7 @@ Este projeto simula um sistema de monitoramento de preços de combustíveis em p
 
 ### Fluxo da Arquitetura
 
-```
-data-generator  →  MongoDB  →  data-pipeline (producer Redis)  →  Redis Streams
-                                                                        ↓
-                                                              consumer → MongoDB
-                                                                        ↓
-                                                              streamlit-app (dashboard)
-```
+![Arquitetura Proposta](images/arquitetura-solucao.drawio.png)
 
 ---
 
